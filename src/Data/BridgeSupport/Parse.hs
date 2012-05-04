@@ -5,6 +5,7 @@ module Data.BridgeSupport.Parse
     , readBridgeSupport_1_0
     ) where
 
+import Control.Applicative
 import Control.Monad.Error
 import Control.Monad.State
 import Data.BridgeSupport.Types
@@ -31,7 +32,7 @@ defaultVersion = "1.0"
 readers = [ ("1.0", readBridgeSupport_1_0) ]
 
 process cxt xs reader = do
-    (ys, unhandled) <- runStateT reader xs
+    (ys, unhandled) <- runStateT (select (not . isElement) >> reader) xs
     if null unhandled || ignoreLeftovers
         then return ys
         else throwError $ unlines
@@ -51,28 +52,42 @@ select p = selectJust p'
 isElement Elem{} = True
 isElement _      = False
 
-getRequiredAttr attr e = maybe err return (findAttr attr e)
+findAttr' attr = findAttr (unqual attr)
+
+getRequiredAttr attr e = maybe err return (findAttr' attr e)
     where err = throwError (ppElement e ++ " element missing required " ++ show attr ++ " attribute")
 
-getAttr def attr = maybe (return def) return . findAttr attr
+getOptionalAttr attr = return . findAttr' attr
 
-getBoolAttr def attr e = case findAttr attr e of
+getAttr def attr = maybe (return def) return . findAttr' attr
+
+getBoolAttr def attr e = case findAttr' attr e of
     Nothing      -> return def
     Just "true"  -> return True
     Just "false" -> return False
     Just other   -> throwError ("Invalid boolean value: " ++ show other)
 
-getIntAttr def attr e = case findAttr attr e of
+getIntAttr def attr e = case findAttr' attr e of
     Nothing     -> return def
     Just str    -> case reads str of
         (i,""):_    -> return (i :: Int)
         _           -> throwError ("Invalid int value for attribute " ++ show attr ++ ": " ++ show str)
 
+getSizedAttr getThing label e = do
+    mb32 <- getThing  label          e
+    mb64 <- getThing (label ++ "64") e
+    
+    return $! case (mb32, mb64) of
+        (Just m32, Just m64) -> Just Sized{..}
+        (Just m32, Nothing)  -> Just (Sized m32 m32)
+        (Nothing,  Just m64) -> Just (Sized m64 m64)
+        (Nothing, Nothing)   -> Nothing
+
 selectElems name = selectJust p
     where
         p (Elem e)
-            | elName e == name  = Just e
-        p _                     = Nothing
+            | elName e == unqual name   = Just e
+        p _                             = Nothing
 
 readBridgeSupport_1_0 :: StateT [Content] (Either String) BridgeSupport
 readBridgeSupport_1_0 = do
@@ -92,85 +107,85 @@ readBridgeSupport_1_0 = do
     
     return BridgeSupport {..}
 
-getDependencies = mapM (getRequiredAttr (unqual "path")) =<< selectElems (unqual "depends_on")
+getDependencies = mapM (getRequiredAttr "path") =<< selectElems "depends_on"
 
 getTypeInfo e = do
-    name   <- getRequiredAttr (unqual "name") e
-    m32 <- getRequiredAttr (unqual "type") e
-    m64 <- getAttr m32 (unqual "type64") e
+    name   <- getRequiredAttr "name" e
+    m32 <- getRequiredAttr "type" e
+    m64 <- getAttr m32 "type64" e
     let typeEncoding = Sized{..}
     return TypeInfo{..}
 
 getStructs = do
-    structElems <- selectElems (unqual "struct")
+    structElems <- selectElems "struct"
     sequence 
         [ do
             structType   <- getTypeInfo e
-            structOpaque <- getBoolAttr False (unqual "opaque") e
+            structOpaque <- getBoolAttr False "opaque" e
             
             return Struct{..}
         | e <- structElems
         ]
 
 getOpaqueTypes = do
-    mapM getTypeInfo =<< selectElems (unqual "opaque")
+    mapM getTypeInfo =<< selectElems "opaque"
 
 getConstants = do
-    constantElems <- selectElems (unqual "constant")
+    constantElems <- selectElems "constant"
     sequence
         [ do
             TypeInfo constantName constantType <- getTypeInfo e
-            magicCookie <- getBoolAttr False (unqual "magic_cookie") e
+            magicCookie <- getBoolAttr False "magic_cookie" e
             return Constant{..}
         | e <- constantElems
         ]
 
 getCFTypes = do
-    cfTypeElems <- selectElems (unqual "cftype")
+    cfTypeElems <- selectElems "cftype"
     sequence
         [ do
             cfTypeInfo      <- getTypeInfo e
-            let getTypeID_func  = findAttr (unqual "gettypeid_func") e
-                tollFree        = findAttr (unqual "tollfree")       e
+            let getTypeID_func  = findAttr' "gettypeid_func" e
+                tollFree        = findAttr' "tollfree"       e
             return CFType{..}
         | e <- cfTypeElems
         ]
 
 getStringConstants = do
-    constantElems <- selectElems (unqual "string_constant")
+    constantElems <- selectElems "string_constant"
     sequence
         [ do
-            stringName  <- getRequiredAttr (unqual "name")    e
-            m32         <- getRequiredAttr (unqual "value")   e
-            m64         <- getAttr m32     (unqual "value64") e
+            stringName  <- getRequiredAttr "name"    e
+            m32         <- getRequiredAttr "value"   e
+            m64         <- getAttr m32     "value64" e
             let stringValue = Sized{..}
-            stringNSString <- getBoolAttr False (unqual "nsstring") e
+            stringNSString <- getBoolAttr False "nsstring" e
             return StringConstant{..}
         | e <- constantElems
         ]
 
 getEnumTypes = do
-    enumElems <- selectElems (unqual "enum")
+    enumElems <- selectElems "enum"
     sequence
         [ do
-            enumName    <- getRequiredAttr   (unqual "name")    e
-            let m32 = findAttr (unqual "value")   e
-                m64 = findAttr (unqual "value64") e
-                enumValue = Sized{..}
-            ignoreEnum  <- getBoolAttr False (unqual "ignore")  e
-            let enumSuggestion = findAttr (unqual "suggestion") e
+            enumName        <- getRequiredAttr   "name"    e
+            mbEnumValue     <- getSizedAttr getOptionalAttr "value" e
+            let noValue = "No enum value specified for " ++ enumName 
+            enumValue       <- maybe (throwError noValue) return mbEnumValue
+            ignoreEnum      <- getBoolAttr False "ignore"  e
+            enumSuggestion  <- getOptionalAttr "suggestion" e
             return EnumType{..}
         | e <- enumElems
         ]
 
 getFunctions = do
-    functionElems <- selectElems (unqual "function")
+    functionElems <- selectElems "function"
     sequence
         [ do
-            functionName <- getRequiredAttr   (unqual "name")     e
-            isVariadic   <- getBoolAttr False (unqual "variadic") e
-            isInline     <- getBoolAttr False (unqual "inline")   e
-            let sentinel = findAttr           (unqual "sentinel") e
+            functionName <- getRequiredAttr   "name"     e
+            isVariadic   <- getBoolAttr False "variadic" e
+            isInline     <- getBoolAttr False "inline"   e
+            sentinel     <- getOptionalAttr   "sentinel" e
             
             (functionArgs, functionReturn) 
                 <- process (functionName ++ " function") (elContent e) getSignature
@@ -183,11 +198,11 @@ getSignature = liftM2 (,) getArgs getReturn
 
 getIndex e = do
     previous <- get
-    ix <- lift (getIntAttr (previous + 1) (unqual "index") e)
+    ix <- lift (getIntAttr (previous + 1) "index" e)
     put    ix
     return ix
 
-getTypeModifier e = case findAttr (unqual "type_modifier") e of
+getTypeModifier e = case findAttr' "type_modifier" e of
     Nothing     -> return Nothing
     Just "n"    -> return (Just In)
     Just "o"    -> return (Just Out)
@@ -196,29 +211,23 @@ getTypeModifier e = case findAttr (unqual "type_modifier") e of
 
 getArgs :: MonadError String m => StateT [Content] m [Arg]
 getArgs = do
-    argElems <- selectElems (unqual "arg")
+    argElems <- selectElems "arg"
     flip evalStateT 0 $ sequence
         [ do
             argIndex <- getIndex e
             
             lift $ do
                 argDirection <- getTypeModifier e
-                let argArrayLengthInArg = findAttr (unqual "c_array_length_in_arg")     e
-                    argArrayLengthInRet = findAttr (unqual "c_array_length_in_retval")  e
-                    argArrayFixedLength = findAttr (unqual "c_array_of_fixed_length")   e
-                argArrayNullDelim   <- getBoolAttr False (unqual "c_array_delimited_by_null")  e
-                argArrayVariableLen <- getBoolAttr False (unqual "c_array_of_variable_length") e
-                nullAccepted        <- getBoolAttr False (unqual "null_accepted") e
-                let argType = Sized
-                        { m32 = findAttr (unqual "type")   e
-                        , m64 = findAttr (unqual "type64") e
-                        }
-                argIsFunPtr         <- getBoolAttr False (unqual "function_pointer") e
-                argIsPrintfFormat   <- getBoolAttr False (unqual "printf_format")    e
-                let selOfType = Sized
-                        { m32 = findAttr (unqual "sel_of_type")   e
-                        , m64 = findAttr (unqual "sel_of_type64") e
-                        }
+                argArrayLengthInArg <- getOptionalAttr "c_array_length_in_arg"        e
+                argArrayLengthInRet <- getOptionalAttr "c_array_length_in_retval"     e
+                argArrayFixedLength <- getOptionalAttr "c_array_of_fixed_length"      e
+                argArrayNullDelim   <- getBoolAttr False "c_array_delimited_by_null"  e
+                argArrayVariableLen <- getBoolAttr False "c_array_of_variable_length" e
+                nullAccepted        <- getBoolAttr False "null_accepted"              e
+                argType             <- getSizedAttr getOptionalAttr "type"            e
+                argIsFunPtr         <- getBoolAttr False "function_pointer"           e
+                argIsPrintfFormat   <- getBoolAttr False "printf_format"              e
+                selOfType           <- getSizedAttr getOptionalAttr "sel_of_type"     e
                 
                 (argArgs, argReturn)
                     <- process "function argument" (elContent e) getSignature
@@ -228,18 +237,18 @@ getArgs = do
 
 getReturn :: MonadError String m => StateT [Content] m (Maybe Return)
 getReturn = do
-    returnElems <- selectElems (unqual "retval")
+    returnElems <- selectElems "retval"
     liftM listToMaybe $ sequence
         [ do
-            let retArrayLengthInArg = findAttr (unqual "c_array_length_in_arg")     e
-                retArrayFixedLength = findAttr (unqual "c_array_of_fixed_length")   e
-            retArrayNullDelim   <- getBoolAttr False (unqual "c_array_delimited_by_null")  e
-            retArrayVariableLen <- getBoolAttr False (unqual "c_array_of_variable_length") e
-            alreadyRetained     <- getBoolAttr False (unqual "already_retained")           e
-            m32                 <- getRequiredAttr (unqual "type")   e
-            m64                 <- getAttr m32     (unqual "type64") e
-            let returnType = Sized{..}
-            retIsFunPtr         <- getBoolAttr False (unqual "function_pointer") e
+            retArrayLengthInArg <- getOptionalAttr "c_array_length_in_arg"        e
+            retArrayFixedLength <- getOptionalAttr "c_array_of_fixed_length"      e
+            retArrayNullDelim   <- getBoolAttr False "c_array_delimited_by_null"  e
+            retArrayVariableLen <- getBoolAttr False "c_array_of_variable_length" e
+            alreadyRetained     <- getBoolAttr False "already_retained"           e
+            mbReturnType        <- getSizedAttr getOptionalAttr "type"            e
+            let noRet = "No return type specified in element: " ++ show e
+            returnType          <- maybe (fail noRet) return mbReturnType
+            retIsFunPtr         <- getBoolAttr False "function_pointer"           e
             
             (retArgs, retReturn)
                 <- process "function argument" (elContent e) getSignature
@@ -249,39 +258,37 @@ getReturn = do
         ]
 
 getAliases = do
-    aliasElements <- selectElems (unqual "function_alias")
+    aliasElements <- selectElems "function_alias"
     sequence
         [ do
-            aliasName       <- getRequiredAttr (unqual "name")     e
-            aliasOriginal   <- getRequiredAttr (unqual "original") e
+            aliasName       <- getRequiredAttr "name"     e
+            aliasOriginal   <- getRequiredAttr "original" e
             return Alias{..}
         | e <- aliasElements
         ]
 
 getClassInterface elemName = do
-    classElements <- selectElems (unqual elemName)
+    classElements <- selectElems elemName
     sequence
         [ do
-            className       <- getRequiredAttr (unqual "name") e
+            className       <- getRequiredAttr "name" e
             classMethods    <- process (elemName ++ " " ++ className) (elContent e) getMethods
             return ClassInterface{..}
         | e <- classElements
         ]
 
 getMethods = do
-    methodElems <- selectElems (unqual "method")
+    methodElems <- selectElems "method"
     sequence
         [ do
-            selector            <- getRequiredAttr (unqual "selector") e
-            let methodType = Sized
-                    { m32 = findAttr (unqual "type")   e
-                    , m64 = findAttr (unqual "type64") e
-                    }
-            isClassMethod       <- getBoolAttr False (unqual "class_method") e
-            ignoreMethod        <- getBoolAttr False (unqual "ignore")       e
-            let methodSuggestion = findAttr (unqual "suggestion") e
-            methodIsVariadic    <- getBoolAttr False (unqual "variadic")     e
-            let methodSentinel   = findAttr (unqual "sentinel") e
+            selector            <- getRequiredAttr "selector"         e
+            methodType          <- Sized <$> getOptionalAttr "type"   e
+                                         <*> getOptionalAttr "type64" e
+            isClassMethod       <- getBoolAttr False "class_method"   e
+            ignoreMethod        <- getBoolAttr False "ignore"         e
+            methodSuggestion    <- getOptionalAttr "suggestion"       e
+            methodIsVariadic    <- getBoolAttr False "variadic"       e
+            methodSentinel      <- getOptionalAttr "sentinel"         e
             
             (methodArgs, methodReturn)
                 <- process "function argument" (elContent e) getSignature

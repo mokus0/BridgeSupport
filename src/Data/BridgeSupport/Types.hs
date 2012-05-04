@@ -49,7 +49,7 @@ data StringConstant = StringConstant
 
 data EnumType = EnumType
     { enumName          :: String
-    , enumValue         :: Sized (Maybe String)
+    , enumValue         :: Sized String
     , ignoreEnum        :: Bool
     , enumSuggestion    :: Maybe String
     } deriving (Eq, Show)
@@ -72,10 +72,10 @@ data Arg = Arg
     , argArrayNullDelim     :: Bool
     , argArrayVariableLen   :: Bool
     , nullAccepted          :: Bool
-    , argType               :: Sized (Maybe String)
+    , argType               :: Maybe (Sized String)
     , argIsFunPtr           :: Bool
     , argIsPrintfFormat     :: Bool
-    , selOfType             :: Sized (Maybe String)
+    , selOfType             :: Maybe (Sized String)
     , argArgs               :: [Arg]
     , argReturn             :: Maybe Return
     } deriving (Eq, Show)
