@@ -2,7 +2,7 @@ name:                   BridgeSupport
 version:                0.0.0.1
 stability:              experimental
 
-cabal-version:          >= 1.2
+cabal-version:          >= 1.6
 build-type:             Simple
 
 author:                 James Cook <mokus@deepbondi.net>
@@ -14,12 +14,16 @@ category:               Unclassified
 synopsis:               Parser for Apple's BridgeSupport format
 description:            Parser for Apple's BridgeSupport format
 
+source-repository head
+  type: git
+  location: git://github.com/mokus0/BridgeSupport.git
+
 Library
   hs-source-dirs:       src
   ghc-options:          -Wall -fno-warn-missing-signatures
   exposed-modules:      Data.BridgeSupport
   other-modules:        Data.BridgeSupport.Parse
                         Data.BridgeSupport.Types
-  build-depends:        base >= 3,
+  build-depends:        base >= 3 && < 5,
                         mtl,
                         xml
