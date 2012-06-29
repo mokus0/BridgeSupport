@@ -21,5 +21,6 @@ Library
   other-modules:        Data.BridgeSupport.Parse
                         Data.BridgeSupport.Types
   build-depends:        base >= 3,
+                        containers,
                         mtl,
                         xml

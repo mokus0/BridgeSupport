@@ -9,7 +9,6 @@ data BridgeSupport = BridgeSupport
     , stringConstants   :: [StringConstant]
     , enumTypes         :: [EnumType]
     , functions         :: [Function]
-    , functionAliases   :: [Alias]
     , informalProtocols :: [ClassInterface]
     , classes           :: [ClassInterface]
     } deriving (Eq, Show)
@@ -56,6 +55,7 @@ data EnumType = EnumType
 
 data Function = Function
     { functionName      :: String
+    , functionAliases   :: [String]
     , isVariadic        :: Bool
     , isInline          :: Bool
     , sentinel          :: Maybe String

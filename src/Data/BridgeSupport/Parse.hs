@@ -10,6 +10,8 @@ import Control.Monad.Error
 import Control.Monad.State
 import Data.BridgeSupport.Types
 import Data.Either
+import Data.List
+import qualified Data.Map as M
 import Data.Maybe
 import Text.XML.Light
 
@@ -101,7 +103,6 @@ readBridgeSupport_1_0 = do
     stringConstants     <- getStringConstants
     enumTypes           <- getEnumTypes
     functions           <- getFunctions
-    functionAliases     <- getAliases
     informalProtocols   <- getClassInterface "informal_protocol"
     classes             <- getClassInterface "class"
     
@@ -179,10 +180,12 @@ getEnumTypes = do
         ]
 
 getFunctions = do
-    functionElems <- selectElems "function"
-    sequence
+    functionElems       <- selectElems "function"
+    aliases             <- getAliases
+    fns <- sequence
         [ do
             functionName <- getRequiredAttr   "name"     e
+            let functionAliases = fromMaybe [] (M.lookup functionName aliases)
             isVariadic   <- getBoolAttr False "variadic" e
             isInline     <- getBoolAttr False "inline"   e
             sentinel     <- getOptionalAttr   "sentinel" e
@@ -191,6 +194,24 @@ getFunctions = do
                 <- process (functionName ++ " function") (elContent e) getSignature
             return Function{..}
         | e <- functionElems
+        ]
+    
+    let missingFunctions = M.keys aliases \\ map functionName fns
+    when (not (null missingFunctions)) $
+        throwError ("function alias(es) reference non-existent function"
+            ++ if null (drop 1 missingFunctions) then "" else "s"
+            ++ " " ++ intercalate ", " missingFunctions)
+    
+    return fns
+
+getAliases = do
+    aliasElements <- selectElems "function_alias"
+    M.fromListWith (++) <$> sequence
+        [ do
+            name <- getRequiredAttr "name"     e
+            orig <- getRequiredAttr "original" e
+            return (orig, [name])
+        | e <- aliasElements
         ]
 
 getSignature :: MonadError String m => StateT [Content] m ([Arg], Maybe Return)
@@ -247,7 +268,7 @@ getReturn = do
             alreadyRetained     <- getBoolAttr False "already_retained"           e
             mbReturnType        <- getSizedAttr getOptionalAttr "type"            e
             let noRet = "No return type specified in element: " ++ show e
-            returnType          <- maybe (fail noRet) return mbReturnType
+            returnType          <- maybe (throwError noRet) return mbReturnType
             retIsFunPtr         <- getBoolAttr False "function_pointer"           e
             
             (retArgs, retReturn)
@@ -255,16 +276,6 @@ getReturn = do
             
             return Return{..}
         | e <- returnElems
-        ]
-
-getAliases = do
-    aliasElements <- selectElems "function_alias"
-    sequence
-        [ do
-            aliasName       <- getRequiredAttr "name"     e
-            aliasOriginal   <- getRequiredAttr "original" e
-            return Alias{..}
-        | e <- aliasElements
         ]
 
 getClassInterface elemName = do
